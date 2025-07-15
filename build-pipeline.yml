@@ -1,0 +1,145 @@
+trigger:
+  branches:
+    include:
+      - develop
+      - main
+      - feature/*
+  paths:
+    include:
+      - src/*
+      - environments/*
+      - pipelines/*
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- group: Fabric-Shared-Credentials
+- name: buildConfiguration
+  value: 'Release'
+
+stages:
+- stage: Build
+  displayName: 'Build and Validate Fabric Assets'
+  jobs:
+  - job: ValidateAndBuild
+    displayName: 'Validate Configuration and Build Artifacts'
+    steps:
+
+    - task: PowerShell@2
+      displayName: 'Validate Parameter Files Structure'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $paramFiles = Get-ChildItem -Path "environments" -Filter "*.json" -Recurse
+          $validationErrors = @()
+          $validatedFiles = 0
+          
+          if ($paramFiles.Count -eq 0) {
+            Write-Error "No parameter files found in environments folder"
+            exit 1
+          }
+          
+          foreach ($file in $paramFiles) {
+            try {
+              $content = Get-Content $file.FullName -Raw | ConvertFrom-Json -AsHashtable
+              
+              $requiredProperties = @('ENVIRONMENT', 'workspaceName', 'connectionStrings')
+              foreach ($prop in $requiredProperties) {
+                $found = $false
+                foreach ($key in $content.Keys) {
+                  if ($key -eq $prop -or $key.ToLower() -eq $prop.ToLower()) {
+                    $found = $true
+                    break
+                  }
+                }
+                if (-not $found) {
+                  $validationErrors += "Missing required property '$prop' in $($file.Name)"
+                }
+              }
+              
+              $workspaceName = $content['workspaceName']
+              if ($workspaceName -and $workspaceName -notlike "*Demo-*") {
+                $validationErrors += "Workspace name '$workspaceName' doesn't follow naming convention in $($file.Name)"
+              }
+              
+              $envFromPath = Split-Path (Split-Path $file.FullName -Parent) -Leaf
+              $envFromFile = $content['ENVIRONMENT']
+              if ($envFromFile -and $envFromFile -ne $envFromPath) {
+                $validationErrors += "ENVIRONMENT value '$envFromFile' doesn't match folder name '$envFromPath' in $($file.Name)"
+              }
+              
+              $validatedFiles++
+            }
+            catch {
+              $validationErrors += "Invalid JSON syntax in $($file.Name): $($_.Exception.Message)"
+            }
+          }
+          
+          if ($validationErrors.Count -gt 0) {
+            foreach ($error in $validationErrors) {
+              Write-Host "Validation Error: $error" -ForegroundColor Red
+            }
+            exit 1
+          }
+
+    - task: PowerShell@2
+      displayName: 'Test Service Principal Authentication'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Install-Module -Name MicrosoftPowerBIMgmt -Force -Scope CurrentUser -AllowClobber
+          $securePassword = ConvertTo-SecureString "$(clientSecret)" -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential("$(clientId)", $securePassword)
+          Connect-PowerBIServiceAccount -ServicePrincipal -Credential $credential -TenantId "$(tenantId)"
+          $token = Get-PowerBIAccessToken
+          if (-not $token) {
+            Write-Error "Authentication failed."
+            exit 1
+          }
+
+    - task: PowerShell@2
+      displayName: 'Create parameter.yml for fabric-cicd'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $parameterYmlContent = @"
+          find_replace:
+            - find_value: "Dev_vgsales.csv"
+              replace_value:
+                dev: "Dev_vgsales.csv"
+                test: "Test_vgsales.csv"
+                prod: "Prod_vgsales.csv"
+          "@
+          
+          # Create src directory if it doesn't exist
+          if (-not (Test-Path "src")) {
+            New-Item -ItemType Directory -Path "src" -Force
+          }
+          
+          # Create parameter.yml in src directory where fabric-cicd expects it
+          $parameterYmlContent | Out-File -FilePath "src/parameter.yml" -Encoding utf8
+
+    - task: PowerShell@2
+      displayName: 'Verify parameter.yml Structure'
+      inputs:
+        targetType: 'inline'
+        script: |
+          if (-Not (Test-Path "src/parameter.yml")) {
+            Write-Error "parameter.yml not found in src directory"
+            exit 1
+          }
+          
+          $content = Get-Content "src/parameter.yml" -Raw
+          if ($content -notmatch "find_replace:") {
+            Write-Error "parameter.yml missing find_replace section"
+            exit 1
+          }
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Build Artifacts'
+      inputs:
+        pathToPublish: '$(Build.SourcesDirectory)'
+        artifactName: 'fabric-assets'
+        publishLocation: 'Container'
