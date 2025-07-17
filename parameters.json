@@ -1,0 +1,19 @@
+{
+  "ENVIRONMENT": "prod",
+  "workspaceName": "Demo-Production",
+  "connectionStrings": {
+    "databaseServer": "prod-sql.company.com",
+    "databaseName": "FabricProd",
+    "apiEndpoint": "https://api.company.com",
+    "storageAccount": "prodstorageaccount"
+  },
+  "assetNames": {
+    "lakehouse": "LH_Prod",
+    "eventhouse": "demo_eventhouse_prod",
+    "notebook": "lakehouse_ci_demo_prod",
+    "dataflow": "Test_Dataflow_prod",
+    "report": "PBI_Demo_prod",
+    "semanticModel": "SM_demo_prod",
+    "kqlQueryset": "demo_eventhouse_prod_queryset"
+  }
+}

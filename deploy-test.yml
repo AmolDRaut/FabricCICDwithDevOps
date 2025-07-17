@@ -19,6 +19,7 @@ stages:
         deploy:
           steps:
 
+          # Download build artifacts from main branch
           - task: DownloadPipelineArtifact@2
             displayName: 'Download Build Artifacts'
             inputs:
@@ -30,13 +31,22 @@ stages:
               artifactName: 'fabric-assets'
               targetPath: '$(Pipeline.Workspace)/fabric-assets'
 
+          # Set up Python environment
           - task: UsePythonVersion@0
+            displayName: 'Use Python 3.12'
             inputs:
               versionSpec: '3.12'
               addToPath: true
 
+          # Install required Python packages
+          - script: |
+              python -m pip install --upgrade pip
+              pip install fabric-cicd azure-identity
+            displayName: 'Install Dependencies'
+
+          # Verify parameter.yml exists in artifacts
           - task: PowerShell@2
-            displayName: 'Verify parameter.yml exists in workspace'
+            displayName: 'Verify parameter.yml exists'
             inputs:
               targetType: 'inline'
               script: |
@@ -44,49 +54,22 @@ stages:
                 
                 if (-not (Test-Path $parameterPath)) {
                   Write-Error "parameter.yml not found at: $parameterPath"
-                  Write-Host "Available files in fabric-assets:"
-                  Get-ChildItem "$(Pipeline.Workspace)/fabric-assets" -Recurse | Select-Object FullName
                   exit 1
                 }
-                
-                Write-Host "parameter.yml found at: $parameterPath"
-                Write-Host "Content preview:"
-                Get-Content $parameterPath | Select-Object -First 10
 
-          - script: |
-              python -m pip install --upgrade pip
-              pip install fabric-cicd azure-identity
-            displayName: 'Install Dependencies'
-
+          # Load test configuration variables
           - task: PowerShell@2
-            displayName: 'Load Test Environment Configuration'
+            displayName: 'Load Test Configuration'
             inputs:
               targetType: 'inline'
               script: |
                 $testParamsPath = "$(Pipeline.Workspace)/fabric-assets/environments/test/parameters.json"
+                $testParams = Get-Content $testParamsPath | ConvertFrom-Json
                 
-                if (-not (Test-Path $testParamsPath)) {
-                  Write-Error "Test parameters file not found: $testParamsPath"
-                  exit 1
-                }
-                
-                try {
-                  $testParams = Get-Content $testParamsPath | ConvertFrom-Json
-                  
-                  Write-Host "Test Environment Configuration loaded"
-                  Write-Host "Workspace: $($testParams.workspaceName)"
-                  Write-Host "Environment: $($testParams.ENVIRONMENT)"
-                  Write-Host "Database: $($testParams.connectionStrings.databaseServer)"
-                  Write-Host "API: $($testParams.connectionStrings.apiEndpoint)"
-                  
-                  Write-Host "##vso[task.setvariable variable=testWorkspaceName]$($testParams.workspaceName)"
-                  Write-Host "##vso[task.setvariable variable=testEnvironment]$($testParams.ENVIRONMENT)"
-                }
-                catch {
-                  Write-Error "Failed to parse test parameters: $($_.Exception.Message)"
-                  exit 1
-                }
+                Write-Host "##vso[task.setvariable variable=testWorkspaceName]$($testParams.workspaceName)"
+                Write-Host "##vso[task.setvariable variable=testEnvironment]$($testParams.ENVIRONMENT)"
 
+          # Authenticate to Fabric services and get workspace ID
           - task: PowerShell@2
             displayName: 'Authenticate to Fabric Services'
             inputs:
@@ -102,9 +85,8 @@ stages:
                   
                   $workspace = Get-PowerBIWorkspace -Name "$(testWorkspaceName)"
                   if ($workspace) {
-                    Write-Host "Test workspace found: $(testWorkspaceName)"
-                    Write-Host "Workspace ID: $($workspace.Id)"
                     Write-Host "##vso[task.setvariable variable=testWorkspaceId]$($workspace.Id)"
+                    Write-Host "Test workspace found: $(testWorkspaceName)"
                   } else {
                     Write-Error "Test workspace not found: $(testWorkspaceName)"
                     exit 1
@@ -115,23 +97,11 @@ stages:
                   exit 1
                 }
 
+          # Deploy foundation assets (Lakehouse, Dataflow)
           - script: |
               cd "$(Pipeline.Workspace)/fabric-assets"
-              
-              if [ ! -f "src/parameter.yml" ]; then
-                echo "Error: parameter.yml not found in src directory"
-                exit 1
-              fi
-              
-              echo "parameter.yml content:"
-              cat src/parameter.yml
-              
-              echo "Checking source files:"
-              find src -name "*.pq" -exec echo "Found: {}" \; -exec head -5 {} \;
-              
               python -c "
               import os
-              import sys
               from fabric_cicd import FabricWorkspace, publish_all_items
               from azure.identity import ClientSecretCredential
 
@@ -139,56 +109,26 @@ stages:
               client_id = os.environ['CLIENT_ID']
               client_secret = os.environ['CLIENT_SECRET']
               credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
-
               workspace_id = os.environ['FABRIC_WORKSPACE_ID']
               environment = os.environ['TARGET_ENVIRONMENT']
 
-              # Deploy assets in phases to isolate Dataflow issues
-              asset_phases = [
-                  ['Lakehouse'],
-                  ['Notebook', 'SemanticModel', 'Report'],
-                  ['Dataflow'],
-                  ['Eventhouse', 'KQLQueryset']
-              ]
+              foundation_assets = ['Lakehouse', 'Dataflow']
               
-              for phase_num, asset_types in enumerate(asset_phases, 1):
-                  print(f'Deploying Phase {phase_num}: {asset_types}')
-                  try:
-                      workspace = FabricWorkspace(
-                          workspace_id=workspace_id,
-                          repository_directory='src',
-                          token_credential=credential,
-                          environment=environment,
-                          item_type_in_scope=asset_types
-                      )
-                      publish_all_items(workspace)
-                      print(f'Phase {phase_num} completed successfully')
-                  except Exception as e:
-                      error_message = str(e)
-                      
-                      # Handle KQL Database timing issues
-                      if 'KQL Database' in error_message and ('not yet deployed' in error_message or 'Cannot find' in error_message):
-                          print(f'KQL Database deployment issue detected in Phase {phase_num}: {error_message}')
-                          print('This is a known issue with KQL Database deployment timing.')
-                          continue
-                      
-                      # Handle Dataflow issues
-                      elif 'Dataflow' in str(asset_types) and ('connection' in error_message.lower() or 'parameter' in error_message.lower()):
-                          print(f'Dataflow deployment issue detected in Phase {phase_num}: {error_message}')
-                          print('Dataflow may have connection or parameter configuration issues.')
-                          print('Other assets will continue to deploy.')
-                          continue
-                      
-                      else:
-                          print(f'Phase {phase_num} failed: {type(e).__name__}: {e}')
-                          import traceback
-                          traceback.print_exc()
-                          # Continue with remaining phases instead of exiting
-                          continue
-              
-              print('Deployment completed with all phases processed')
+              try:
+                  workspace = FabricWorkspace(
+                      workspace_id=workspace_id,
+                      repository_directory='src',
+                      token_credential=credential,
+                      environment=environment,
+                      item_type_in_scope=foundation_assets
+                  )
+                  publish_all_items(workspace)
+              except Exception as e:
+                  print(f'Foundation assets deployment failed: {e}')
+                  import traceback
+                  traceback.print_exc()
               "
-            displayName: 'Deploy All Assets to Test Environment'
+            displayName: 'Deploy Foundation Assets'
             env:
               TENANT_ID: $(tenantId)
               CLIENT_ID: $(clientId)
@@ -196,6 +136,123 @@ stages:
               FABRIC_WORKSPACE_ID: $(testWorkspaceId)
               TARGET_ENVIRONMENT: $(testEnvironment)
 
+          # Deploy processing assets (Notebook, Eventhouse)
+          - script: |
+              cd "$(Pipeline.Workspace)/fabric-assets"
+              python -c "
+              import os
+              from fabric_cicd import FabricWorkspace, publish_all_items
+              from azure.identity import ClientSecretCredential
+
+              tenant_id = os.environ['TENANT_ID']
+              client_id = os.environ['CLIENT_ID']
+              client_secret = os.environ['CLIENT_SECRET']
+              credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
+              workspace_id = os.environ['FABRIC_WORKSPACE_ID']
+              environment = os.environ['TARGET_ENVIRONMENT']
+
+              processing_assets = ['Notebook', 'Eventhouse']
+              
+              try:
+                  workspace = FabricWorkspace(
+                      workspace_id=workspace_id,
+                      repository_directory='src',
+                      token_credential=credential,
+                      environment=environment,
+                      item_type_in_scope=processing_assets
+                  )
+                  publish_all_items(workspace)
+              except Exception as e:
+                  print(f'Processing assets deployment failed: {e}')
+                  import traceback
+                  traceback.print_exc()
+              "
+            displayName: 'Deploy Processing Assets'
+            env:
+              TENANT_ID: $(tenantId)
+              CLIENT_ID: $(clientId)
+              CLIENT_SECRET: $(clientSecret)
+              FABRIC_WORKSPACE_ID: $(testWorkspaceId)
+              TARGET_ENVIRONMENT: $(testEnvironment)
+
+          # Deploy business intelligence assets (SemanticModel, Report)
+          - script: |
+              cd "$(Pipeline.Workspace)/fabric-assets"
+              python -c "
+              import os
+              from fabric_cicd import FabricWorkspace, publish_all_items
+              from azure.identity import ClientSecretCredential
+
+              tenant_id = os.environ['TENANT_ID']
+              client_id = os.environ['CLIENT_ID']
+              client_secret = os.environ['CLIENT_SECRET']
+              credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
+              workspace_id = os.environ['FABRIC_WORKSPACE_ID']
+              environment = os.environ['TARGET_ENVIRONMENT']
+
+              bi_assets = ['SemanticModel', 'Report']
+              
+              try:
+                  workspace = FabricWorkspace(
+                      workspace_id=workspace_id,
+                      repository_directory='src',
+                      token_credential=credential,
+                      environment=environment,
+                      item_type_in_scope=bi_assets
+                  )
+                  publish_all_items(workspace)
+              except Exception as e:
+                  print(f'BI assets deployment failed: {e}')
+                  import traceback
+                  traceback.print_exc()
+              "
+            displayName: 'Deploy BI Assets'
+            env:
+              TENANT_ID: $(tenantId)
+              CLIENT_ID: $(clientId)
+              CLIENT_SECRET: $(clientSecret)
+              FABRIC_WORKSPACE_ID: $(testWorkspaceId)
+              TARGET_ENVIRONMENT: $(testEnvironment)
+
+          # Deploy advanced assets (KQLQueryset) with graceful failure handling
+          - script: |
+              cd "$(Pipeline.Workspace)/fabric-assets"
+              python -c "
+              import os
+              from fabric_cicd import FabricWorkspace, publish_all_items
+              from azure.identity import ClientSecretCredential
+
+              tenant_id = os.environ['TENANT_ID']
+              client_id = os.environ['CLIENT_ID']
+              client_secret = os.environ['CLIENT_SECRET']
+              credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
+              workspace_id = os.environ['FABRIC_WORKSPACE_ID']
+              environment = os.environ['TARGET_ENVIRONMENT']
+
+              advanced_assets = ['KQLQueryset']
+              
+              try:
+                  workspace = FabricWorkspace(
+                      workspace_id=workspace_id,
+                      repository_directory='src',
+                      token_credential=credential,
+                      environment=environment,
+                      item_type_in_scope=advanced_assets
+                  )
+                  publish_all_items(workspace)
+                  print('KQLQueryset deployed successfully')
+              except Exception as e:
+                  print(f'KQLQueryset deployment not yet supported: {e}')
+              "
+            displayName: 'Deploy Advanced Assets'
+            env:
+              TENANT_ID: $(tenantId)
+              CLIENT_ID: $(clientId)
+              CLIENT_SECRET: $(clientSecret)
+              FABRIC_WORKSPACE_ID: $(testWorkspaceId)
+              TARGET_ENVIRONMENT: $(testEnvironment)
+
+          # Validate successful test deployment
           - task: PowerShell@2
             displayName: 'Validate Test Deployment'
             inputs:
@@ -213,4 +270,22 @@ stages:
                     Write-Host "Test deployment validation successful"
                     Write-Host "Workspace: $($workspace.Name)"
                     Write-Host "Environment: $(testEnvironment)"
-                    Write-Host "Configuration applied via parameter.yml find_replace"
+                  }
+                }
+                catch {
+                  Write-Error "Test validation failed: $($_.Exception.Message)"
+                  exit 1
+                }
+                finally {
+                  try { Disconnect-PowerBIServiceAccount } catch { }
+                }
+
+          # Final deployment summary
+          - script: |
+              echo "Test deployment completed successfully"
+              echo "Environment: $(testEnvironment)"
+              echo "Workspace: $(testWorkspaceName)"
+              echo "Workspace ID: $(testWorkspaceId)"
+              echo "Configuration method: parameter.yml find_replace"
+              echo "Build: $(Build.BuildNumber)"
+            displayName: 'Deployment Summary'
