@@ -1,19 +1,19 @@
 {
-  "ENVIRONMENT": "prod",
-  "workspaceName": "Demo-Production",
+  "ENVIRONMENT": "test",
+  "workspaceName": "Demo-Test",
   "connectionStrings": {
-    "databaseServer": "prod-sql.company.com",
-    "databaseName": "FabricProd",
-    "apiEndpoint": "https://api.company.com",
-    "storageAccount": "prodstorageaccount"
+    "databaseServer": "test-sql.company.com",
+    "databaseName": "FabricTest",
+    "apiEndpoint": "https://api-test.company.com",
+    "storageAccount": "teststorageaccount"
   },
   "assetNames": {
-    "lakehouse": "LH_Prod",
-    "eventhouse": "demo_eventhouse_prod",
-    "notebook": "lakehouse_ci_demo_prod",
-    "dataflow": "Test_Dataflow_prod",
-    "report": "PBI_Demo_prod",
-    "semanticModel": "SM_demo_prod",
-    "kqlQueryset": "demo_eventhouse_prod_queryset"
+    "lakehouse": "LH_Test",
+    "eventhouse": "demo_eventhouse_test",
+    "notebook": "lakehouse_ci_demo_test",
+    "dataflow": "Test_Dataflow_test",
+    "report": "PBI_Demo_test",
+    "semanticModel": "SM_demo_test",
+    "kqlQueryset": "demo_eventhouse_test_queryset"
   }
 }

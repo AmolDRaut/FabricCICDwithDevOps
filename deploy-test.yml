@@ -97,11 +97,13 @@ stages:
                   exit 1
                 }
 
-          # Deploy foundation assets (Lakehouse, Dataflow)
+          # Deploy all assets to test with two-phase approach
           - script: |
               cd "$(Pipeline.Workspace)/fabric-assets"
+              
               python -c "
               import os
+              import sys
               from fabric_cicd import FabricWorkspace, publish_all_items
               from azure.identity import ClientSecretCredential
 
@@ -109,142 +111,37 @@ stages:
               client_id = os.environ['CLIENT_ID']
               client_secret = os.environ['CLIENT_SECRET']
               credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
+
               workspace_id = os.environ['FABRIC_WORKSPACE_ID']
               environment = os.environ['TARGET_ENVIRONMENT']
 
-              foundation_assets = ['Lakehouse', 'Dataflow']
+              # Deploy assets in two phases
+              asset_phases = [
+                  ['Lakehouse', 'Eventhouse', 'SemanticModel'],
+                  ['Notebook', 'Dataflow', 'KQLDatabase', 'Report', 'KQLQueryset']
+              ]
               
-              try:
-                  workspace = FabricWorkspace(
-                      workspace_id=workspace_id,
-                      repository_directory='src',
-                      token_credential=credential,
-                      environment=environment,
-                      item_type_in_scope=foundation_assets
-                  )
-                  publish_all_items(workspace)
-              except Exception as e:
-                  print(f'Foundation assets deployment failed: {e}')
-                  import traceback
-                  traceback.print_exc()
-              "
-            displayName: 'Deploy Foundation Assets'
-            env:
-              TENANT_ID: $(tenantId)
-              CLIENT_ID: $(clientId)
-              CLIENT_SECRET: $(clientSecret)
-              FABRIC_WORKSPACE_ID: $(testWorkspaceId)
-              TARGET_ENVIRONMENT: $(testEnvironment)
-
-          # Deploy processing assets (Notebook, Eventhouse)
-          - script: |
-              cd "$(Pipeline.Workspace)/fabric-assets"
-              python -c "
-              import os
-              from fabric_cicd import FabricWorkspace, publish_all_items
-              from azure.identity import ClientSecretCredential
-
-              tenant_id = os.environ['TENANT_ID']
-              client_id = os.environ['CLIENT_ID']
-              client_secret = os.environ['CLIENT_SECRET']
-              credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
-              workspace_id = os.environ['FABRIC_WORKSPACE_ID']
-              environment = os.environ['TARGET_ENVIRONMENT']
-
-              processing_assets = ['Notebook', 'Eventhouse']
+              for phase_num, asset_types in enumerate(asset_phases, 1):
+                  print(f'Deploying Phase {phase_num}: {asset_types}')
+                  try:
+                      workspace = FabricWorkspace(
+                          workspace_id=workspace_id,
+                          repository_directory='src',
+                          token_credential=credential,
+                          environment=environment,
+                          item_type_in_scope=asset_types
+                      )
+                      publish_all_items(workspace)
+                      print(f'Phase {phase_num} completed successfully')
+                  except Exception as e:
+                      print(f'Phase {phase_num} failed: {type(e).__name__}: {e}')
+                      import traceback
+                      traceback.print_exc()
+                      continue
               
-              try:
-                  workspace = FabricWorkspace(
-                      workspace_id=workspace_id,
-                      repository_directory='src',
-                      token_credential=credential,
-                      environment=environment,
-                      item_type_in_scope=processing_assets
-                  )
-                  publish_all_items(workspace)
-              except Exception as e:
-                  print(f'Processing assets deployment failed: {e}')
-                  import traceback
-                  traceback.print_exc()
+              print('Test deployment completed')
               "
-            displayName: 'Deploy Processing Assets'
-            env:
-              TENANT_ID: $(tenantId)
-              CLIENT_ID: $(clientId)
-              CLIENT_SECRET: $(clientSecret)
-              FABRIC_WORKSPACE_ID: $(testWorkspaceId)
-              TARGET_ENVIRONMENT: $(testEnvironment)
-
-          # Deploy business intelligence assets (SemanticModel, Report)
-          - script: |
-              cd "$(Pipeline.Workspace)/fabric-assets"
-              python -c "
-              import os
-              from fabric_cicd import FabricWorkspace, publish_all_items
-              from azure.identity import ClientSecretCredential
-
-              tenant_id = os.environ['TENANT_ID']
-              client_id = os.environ['CLIENT_ID']
-              client_secret = os.environ['CLIENT_SECRET']
-              credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
-              workspace_id = os.environ['FABRIC_WORKSPACE_ID']
-              environment = os.environ['TARGET_ENVIRONMENT']
-
-              bi_assets = ['SemanticModel', 'Report']
-              
-              try:
-                  workspace = FabricWorkspace(
-                      workspace_id=workspace_id,
-                      repository_directory='src',
-                      token_credential=credential,
-                      environment=environment,
-                      item_type_in_scope=bi_assets
-                  )
-                  publish_all_items(workspace)
-              except Exception as e:
-                  print(f'BI assets deployment failed: {e}')
-                  import traceback
-                  traceback.print_exc()
-              "
-            displayName: 'Deploy BI Assets'
-            env:
-              TENANT_ID: $(tenantId)
-              CLIENT_ID: $(clientId)
-              CLIENT_SECRET: $(clientSecret)
-              FABRIC_WORKSPACE_ID: $(testWorkspaceId)
-              TARGET_ENVIRONMENT: $(testEnvironment)
-
-          # Deploy advanced assets (KQLQueryset) with graceful failure handling
-          - script: |
-              cd "$(Pipeline.Workspace)/fabric-assets"
-              python -c "
-              import os
-              from fabric_cicd import FabricWorkspace, publish_all_items
-              from azure.identity import ClientSecretCredential
-
-              tenant_id = os.environ['TENANT_ID']
-              client_id = os.environ['CLIENT_ID']
-              client_secret = os.environ['CLIENT_SECRET']
-              credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
-              workspace_id = os.environ['FABRIC_WORKSPACE_ID']
-              environment = os.environ['TARGET_ENVIRONMENT']
-
-              advanced_assets = ['KQLQueryset']
-              
-              try:
-                  workspace = FabricWorkspace(
-                      workspace_id=workspace_id,
-                      repository_directory='src',
-                      token_credential=credential,
-                      environment=environment,
-                      item_type_in_scope=advanced_assets
-                  )
-                  publish_all_items(workspace)
-                  print('KQLQueryset deployed successfully')
-              except Exception as e:
-                  print(f'KQLQueryset deployment not yet supported: {e}')
-              "
-            displayName: 'Deploy Advanced Assets'
+            displayName: 'Deploy All Assets to Test'
             env:
               TENANT_ID: $(tenantId)
               CLIENT_ID: $(clientId)

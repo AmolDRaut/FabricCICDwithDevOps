@@ -168,7 +168,7 @@ stages:
                   exit 1
                 }
 
-          # Deploy all assets to production with phased approach
+          # Deploy all assets to production with two-phase approach
           - script: |
               cd "$(Pipeline.Workspace)/fabric-assets"
               
@@ -186,12 +186,10 @@ stages:
               workspace_id = os.environ['FABRIC_WORKSPACE_ID']
               environment = os.environ['TARGET_ENVIRONMENT']
 
-              # Deploy assets in phases to manage dependencies
+              # Deploy assets in two phases
               asset_phases = [
-                  ['Lakehouse'],
-                  ['Notebook', 'SemanticModel', 'Report'],
-                  ['Dataflow'],
-                  ['Eventhouse', 'KQLQueryset']
+                  ['Lakehouse', 'Eventhouse', 'SemanticModel'],
+                  ['Notebook', 'Dataflow', 'KQLDatabase', 'Report', 'KQLQueryset']
               ]
               
               for phase_num, asset_types in enumerate(asset_phases, 1):
@@ -207,22 +205,10 @@ stages:
                       publish_all_items(workspace)
                       print(f'Phase {phase_num} completed successfully')
                   except Exception as e:
-                      error_message = str(e)
-                      
-                      # Handle known deployment timing issues
-                      if 'KQL Database' in error_message and ('not yet deployed' in error_message or 'Cannot find' in error_message):
-                          print(f'KQL Database deployment timing issue in Phase {phase_num}: {error_message}')
-                          continue
-                      
-                      elif 'Dataflow' in str(asset_types) and ('connection' in error_message.lower() or 'parameter' in error_message.lower()):
-                          print(f'Dataflow deployment issue in Phase {phase_num}: {error_message}')
-                          continue
-                      
-                      else:
-                          print(f'Phase {phase_num} failed: {type(e).__name__}: {e}')
-                          import traceback
-                          traceback.print_exc()
-                          continue
+                      print(f'Phase {phase_num} failed: {type(e).__name__}: {e}')
+                      import traceback
+                      traceback.print_exc()
+                      continue
               
               print('Production deployment completed')
               "
